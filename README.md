@@ -12,6 +12,144 @@ https://your-hostname.com (Cloudflare Tunnel)
 LocalServer (Python) ← localhost:8080
 ```
 
+---
+
+## 処理フロー
+
+```mermaid
+flowchart TB
+    subgraph TV["TradingView"]
+        A[アラート発火]
+        B[Webhook POST 送信]
+    end
+
+    subgraph CF["Cloudflare Tunnel"]
+        C[HTTPS 受信]
+        D[localhost:8080 へ転送]
+    end
+
+    subgraph LS["LocalServer"]
+        E[POST 受信]
+        F[JSON パース]
+        G[ログ出力]
+        H{mt5.enabled?}
+        I[config 読み込み]
+        J[MT5 モジュール インポート]
+        K[symbol/action/volume 取得]
+        L{symbol あり?}
+        M[EXCHANGE:SYMBOL 形式を SYMBOL に変換]
+        N[execute_order 呼び出し]
+    end
+
+    subgraph MT5["MT5 オーダー"]
+        O[MT5 起動確認]
+        P[アカウント確認]
+        Q[ポジション上限チェック]
+        R[成行注文送信]
+    end
+
+    A --> B
+    B --> C
+    C --> D
+    D --> E
+    E --> F
+    F --> G
+    G --> H
+    H -->|true| I
+    H -->|false| S[スキップ]
+    I --> J
+    J --> K
+    K --> L
+    L -->|No| T[スキップ]
+    L -->|Yes| M
+    M --> N
+    N --> O
+    O --> P
+    P --> Q
+    Q --> R
+```
+
+### フロー説明
+
+| ステップ | 説明 |
+|----------|------|
+| 1. TradingView | アラート条件が満たされると、設定した Webhook URL へ POST 送信 |
+| 2. Cloudflare Tunnel | HTTPS で受信し、localhost:8080 へ転送 |
+| 3. LocalServer | POST ボディを JSON としてパースし、ログに記録 |
+| 4. MT5 判定 | `config.mt5.enabled` が `true` の場合のみ注文処理へ |
+| 5. パラメータ取得 | ペイロードから symbol, action, volume を取得（不足時は config で補完） |
+| 6. MT5 注文 | MT5 起動確認 → アカウント確認 → ポジション上限チェック → 成行注文送信 |
+
+---
+
+## Webhook POST リファレンス
+
+### エンドポイント
+
+| メソッド | URL | 説明 |
+|----------|-----|------|
+| POST | `https://your-hostname.com` | Webhook 受信・MT5 注文実行 |
+| GET | `https://your-hostname.com` | ヘルスチェック（`{"message":"Webhook server is running"}` を返す） |
+
+### リクエスト形式
+
+- **Content-Type**: `application/json`（推奨）
+- **Body**: JSON 形式
+
+### ペイロード項目（MT5 注文用）
+
+| 項目 | 型 | 必須 | 説明 | フォールバック |
+|------|-----|------|------|----------------|
+| `symbol` | string | ○* | 通貨ペア（例: BTCUSD, USDJPY） | `symbol_name`, `ticker`, `config.mt5.symbol` |
+| `action` | string | ○* | 注文方向 | `trade`, `order`, `side`, `"buy"` |
+| `volume` | number | - | ロット数 | `quantity`, `config.mt5.volume` (0.01) |
+
+\* symbol はペイロードまたは config のいずれかで必須。action は未指定時 `"buy"`。
+
+### シンボル形式
+
+- `BINANCE:BTCUSD` のように `EXCHANGE:SYMBOL` 形式の場合は、`SYMBOL` 部分のみ使用（例: `BTCUSD`）
+
+### ペイロード例
+
+**最小構成（symbol と action）**
+
+```json
+{"symbol": "BTCUSD", "action": "buy"}
+```
+
+**TradingView 形式（{{ticker}} が BINANCE:BTCUSD 等に置換される）**
+
+```json
+{"symbol": "{{ticker}}", "action": "buy"}
+```
+
+**フル指定**
+
+```json
+{"symbol": "USDJPY", "action": "sell", "volume": 0.01}
+```
+
+### レスポンス
+
+**成功時（200 OK）**
+
+```json
+{"status": "ok", "received": { ... 受信したペイロード ... }}
+```
+
+### 代替キー名
+
+ペイロードでは以下のキー名も認識されます（優先順）:
+
+- **symbol**: `symbol` → `symbol_name` → `ticker`
+- **action**: `action` → `trade` → `order` → `side`
+- **volume**: `volume` → `quantity`
+
+また、`message` や `raw` が JSON 文字列の場合、その内容をパースしてマージします。
+
+---
+
 ## 前提条件
 
 - Python 3.8+
@@ -32,13 +170,33 @@ copy config\config.json.example config\config.json
 
 ### 設定項目
 
-| 項目 | 説明 |
-|------|------|
-| `server.host` | バインドするホスト（通常は `0.0.0.0`） |
-| `server.port` | LocalServer のポート（デフォルト: 8080） |
-| `tunnel.token` | Cloudflare コネクタトークン |
-| `tunnel.hostname` | 公開するホスト名（例: `smcse.example.com`） |
-| `tunnel.api_token` | Cloudflare API トークン（Ingress 更新用） |
+#### server（LocalServer）
+
+| 項目 | 型 | 説明 |
+|------|-----|------|
+| `server.host` | string | バインドするホスト。全インターフェースで受信する場合は `0.0.0.0` |
+| `server.port` | number | LocalServer のポート番号（デフォルト: 8080） |
+
+#### tunnel（Cloudflare Tunnel）
+
+| 項目 | 型 | 説明 |
+|------|-----|------|
+| `tunnel.token` | string | Cloudflare コネクタトークン。トンネル作成時にダッシュボードで取得 |
+| `tunnel.hostname` | string | 公開するホスト名（例: `smcse.example.com`）。Ingress の Public Hostname に対応 |
+| `tunnel.api_token` | string | Cloudflare API トークン。Ingress の起動時自動更新に使用。権限: Account - Cloudflare Tunnel - Edit |
+
+#### mt5（MetaTrader 5）
+
+| 項目 | 型 | 説明 |
+|------|-----|------|
+| `mt5.enabled` | boolean | MT5 注文を有効にする。`false` の場合は Webhook 受信時も注文しない |
+| `mt5.volume` | number | デフォルトロット数。Webhook に volume が含まれない場合に使用（例: 0.01） |
+| `mt5.magic` | number | EA ID（マジック番号）。注文・ポジションの識別用。他 EA と重複しない値にする |
+| `mt5.comment` | string | 注文コメント。MT5 では 31 文字まで |
+| `mt5.terminal_path` | string | MT5 ターミナルの実行ファイルパス。空の場合は自動検出 |
+| `mt5.symbol` | string | 対象シンボル（例: USDJPY, BTCUSD）。ペイロードに symbol がない場合のデフォルト |
+| `mt5.position_limit` | number | 同一シンボルあたりのポジション上限。この件数に達すると新規オーダーを拒否。`0` の場合はチェックしない |
+| `mt5.account_login` | number | 想定する MT5 アカウント番号。一致しないアカウントでログイン中はオーダーを拒否。`0` の場合はチェックしない |
 
 ### トークンの取得
 
@@ -68,25 +226,21 @@ cd LocalServer
 python main.py
 ```
 
-### 動作確認
-
-別ターミナルで:
-
-```powershell
-cd LocalServer
-.\test_post.ps1
-```
-
-または:
-
-```powershell
-$body = '{"symbol":"USDJPY","action":"buy"}'
-Invoke-RestMethod -Uri "http://localhost:8080" -Method POST -ContentType "application/json" -Body $body
-```
-
 ### ログ
 
 受信データは `LocalServer/logs/webhook.log` に記録されます。
+
+### MT5 注文（オプション）
+
+Webhook で受信したシグナルを MetaTrader 5 に成行注文で送信できます。MT5 ツールは `MT5/` ディレクトリに配置されています。
+
+**前提条件**
+
+- MetaTrader 5 ターミナルが起動していること
+- `pip install -r MT5/requirements.txt` でパッケージをインストール
+- `config.json` の `mt5.enabled` を `true` に設定
+
+詳細は [Webhook POST リファレンス](#webhook-post-リファレンス) を参照。
 
 ---
 
@@ -109,7 +263,7 @@ python main.py
 ### Cloudflare ダッシュボードでの設定
 
 1. **Public Hostname（Ingress）**
-   - ダッシュボードで設定するか、`config.json` の `api_token` を設定すると起動時に自動更新
+   - ダッシュボードで設定するか、`config.json` の `tunnel.api_token` を設定すると起動時に自動更新
    - ホスト名: `your-subdomain.yourdomain.com`
    - サービス: `http://localhost:8080`
 
@@ -118,16 +272,6 @@ python main.py
    - 名前: `your-subdomain`（またはホスト名のサブドメイン部分）
    - ターゲット: `{トンネルID}.cfargotunnel.com`
    - トンネル ID はダッシュボードの Tunnels で確認
-
-### 疎通確認
-
-```powershell
-# DNS 解決の確認
-nslookup your-subdomain.yourdomain.com
-
-# 外部 URL へのアクセス確認
-Invoke-RestMethod -Uri "https://your-subdomain.yourdomain.com" -Method GET
-```
 
 ---
 
@@ -143,14 +287,24 @@ Invoke-RestMethod -Uri "https://your-subdomain.yourdomain.com" -Method GET
 ### アラートの作成
 
 1. チャート上で右クリック → 「アラートを追加」
-2. 条件: 「1分毎アラート」（または使用するスクリプトのアラート名）
+2. 条件: 「1分毎アラート」
 3. 通知: 「Webhook URL」を選択
-4. URL: `https://your-subdomain.yourdomain.com`
-5. メッセージ: スクリプトのデフォルト、またはカスタム JSON
+4. URL: `https://your-subdomain.yourdomain.com`（config の `tunnel.hostname` に対応）
+5. メッセージ: スクリプトのデフォルト（`{"symbol":"{{ticker}}","action":"buy"}`）を使用
 
 ---
 
-## 5. 起動順序
+## 5. 起動
+
+### 一括起動（推奨）
+
+```powershell
+python smcse.py
+```
+
+Webhook と Tunnel を同時に起動します。Ctrl+C で終了。
+
+### 個別起動
 
 1. **LocalServer** を起動
    ```powershell
@@ -158,7 +312,7 @@ Invoke-RestMethod -Uri "https://your-subdomain.yourdomain.com" -Method GET
    python main.py
    ```
 
-2. **Tunnel** を起動
+2. **Tunnel** を起動（別ターミナルで）
    ```powershell
    cd tunnel
    python main.py
@@ -172,10 +326,12 @@ Invoke-RestMethod -Uri "https://your-subdomain.yourdomain.com" -Method GET
 
 ```
 SMCSE/
+├── smcse.py                  # 統合起動スクリプト（Webhook + Tunnel）
 ├── config/
 │   ├── config.json.example   # 設定テンプレート
 │   └── config.json           # 実際の設定（Git に含めない）
 ├── LocalServer/              # Webhook 受信サーバー
+├── MT5/                      # MetaTrader 5 注文ツール
 ├── tunnel/                   # Cloudflare Tunnel
 ├── PineScripts/              # TradingView 用 Pine Script
 └── README.md

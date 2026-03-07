@@ -7,5 +7,15 @@
     "token": "",
     "hostname": "your-subdomain.yourdomain.com",
     "api_token": ""
+  },
+  "mt5": {
+    "enabled": false,
+    "volume": 0.01,
+    "magic": 234000,
+    "comment": "SMCSE",
+    "terminal_path": "",
+    "symbol": "USDJPY",
+    "position_limit": 1,
+    "account_login": 0
   }
 }

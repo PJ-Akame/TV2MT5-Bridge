@@ -87,14 +87,95 @@ class WebhookHandler(BaseHTTPRequestHandler):
     def _parse_and_display(self, body: bytes) -> dict:
         """受信ボディをパースし、ターミナルに整形して出力する"""
         result: dict = {}
+        decoded = body.decode("utf-8", errors="replace") if body else ""
         try:
-            decoded = body.decode("utf-8")
-            result = json.loads(decoded) if decoded else {}
+            decoded_stripped = decoded.strip()
+            # BOM や前後の空白を除去
+            if decoded_stripped.startswith("\ufeff"):
+                decoded_stripped = decoded_stripped[1:]
+            result = json.loads(decoded_stripped) if decoded_stripped else {}
         except json.JSONDecodeError:
-            result = {"raw": body.decode("utf-8", errors="replace")}
+            result = {"raw": decoded}
 
         self._output_to_terminal(result)
+
+        # MT5 注文（config で有効な場合のみ）
+        self._execute_mt5_order(result)
+
         return result
+
+    def _execute_mt5_order(self, payload: dict) -> None:
+        """Webhook ペイロードから MT5 注文を実行し、結果をログに記録する"""
+        # config で取引が有効か判定
+        try:
+            from config_loader import load_config
+            config = load_config()
+            if not config.get("mt5", {}).get("enabled", False):
+                _write_log("[MT5] スキップ: mt5.enabled が false です\n")
+                return
+        except Exception as e:
+            _write_log(f"[MT5] スキップ: config 読み込みエラー - {e}\n")
+            return
+
+        try:
+            # プロジェクトルートを path に追加して MT5 をインポート
+            _root = Path(__file__).resolve().parent.parent
+            if str(_root) not in sys.path:
+                sys.path.insert(0, str(_root))
+            from MT5.order import execute_order
+        except ImportError as e:
+            _write_log(f"[MT5] スキップ: MT5 モジュールのインポートに失敗 - {e}\n")
+            return
+
+        mt5_config = config.get("mt5", {})
+
+        # ペイロードから symbol, action, volume を取得（message が JSON の場合はパース）
+        payload_to_use = payload.copy()
+        if "message" in payload and isinstance(payload["message"], str):
+            try:
+                msg_parsed = json.loads(payload["message"])
+                if isinstance(msg_parsed, dict):
+                    payload_to_use = {**payload_to_use, **msg_parsed}
+            except json.JSONDecodeError:
+                pass
+
+        # raw が JSON 形式の文字列の場合はパースしてマージ
+        if "raw" in payload_to_use and isinstance(payload_to_use["raw"], str):
+            raw = payload_to_use["raw"].strip()
+            if raw.startswith("{"):
+                try:
+                    raw_parsed = json.loads(raw)
+                    if isinstance(raw_parsed, dict):
+                        payload_to_use = {**payload_to_use, **raw_parsed}
+                except json.JSONDecodeError:
+                    pass
+
+        # POST された JSON から symbol, action, volume を取得（config はフォールバック）
+        symbol = payload_to_use.get("symbol") or payload_to_use.get("symbol_name") or payload_to_use.get("ticker") or mt5_config.get("symbol")
+        action = payload_to_use.get("action") or payload_to_use.get("trade") or payload_to_use.get("order") or payload_to_use.get("side") or "buy"
+        volume = float(payload_to_use.get("volume", payload_to_use.get("quantity", mt5_config.get("volume", 0.01))))
+
+        if not symbol:
+            _write_log("[MT5] スキップ: symbol が指定されていません（ペイロードにも config.mt5.symbol にもありません）\n")
+            return
+
+        # {{ticker}} が "EXCHANGE:SYMBOL" 形式の場合はシンボル部分のみ使用
+        if ":" in str(symbol):
+            symbol = str(symbol).split(":")[-1]
+
+        try:
+            order_result = execute_order(symbol=str(symbol), action=str(action), volume=volume)
+            mt5_log = (
+                f"[MT5] {'成功' if order_result.success else '失敗'}: {order_result.message}"
+                + (f" (order={order_result.order_id})" if order_result.order_id else "")
+            )
+            _write_log(f"{mt5_log}\n")
+            sys.stdout.write(f"\n{mt5_log}\n")
+            sys.stdout.flush()
+        except Exception as e:
+            _write_log(f"[MT5] 例外: execute_order 実行中 - {e}\n")
+            sys.stderr.write(f"[MT5] 例外: {e}\n")
+            sys.stderr.flush()
 
     def _output_to_terminal(self, data: dict) -> None:
         """受信データをターミナルとログファイルに出力する"""

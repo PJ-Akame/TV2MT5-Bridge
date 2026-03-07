@@ -17,6 +17,15 @@
    - URL: `https://your-subdomain.example.com`（config の tunnel.hostname に対応する URL）
    - メッセージ: スクリプトのデフォルト（またはカスタム JSON）
 
+### メッセージ形式（Webhook でオーダー実行に必要）
+
+```json
+{"time":"{{timenow}}","interval":"1m","symbol":"{{ticker}}","action":"buy"}
+```
+
+- `symbol`: 通貨ペア（{{ticker}} で自動設定）
+- `action`: `buy` または `sell`（オーダー実行に必須）
+
 ### 注意
 
 - 1分足チャートで使用することを推奨

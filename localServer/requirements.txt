@@ -1,1 +1,2 @@
-# 標準ライブラリのみ使用のため依存パッケージなし
+# Webhook サーバー（標準ライブラリのみ）
+# MT5 注文機能を使用する場合: pip install -r ../MT5/requirements.txt
