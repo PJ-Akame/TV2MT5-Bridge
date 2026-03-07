@@ -1,0 +1,31 @@
+# 設定ファイル（トークン・APIキー等を含むため格納しない）
+config/config.json
+
+# cloudflared バイナリ（install_cloudflared.py で取得）
+tunnel/bin/cloudflared
+tunnel/bin/cloudflared.exe
+
+# ログ
+LocalServer/logs/
+localServer/logs/
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+*.so
+.venv/
+venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
