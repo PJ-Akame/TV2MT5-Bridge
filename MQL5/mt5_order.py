@@ -1,6 +1,6 @@
 """
-MT5 注文実行モジュール
-TradingView Webhook のシグナルを MetaTrader 5 に送信する
+MetaTrader 5 注文実行モジュール（Python ブリッジ）
+TradingView Webhook のシグナルを MetaTrader 5 ターミナルに送信する
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ _CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "config.json"
 
 
 def _load_mt5_config() -> dict[str, Any]:
-    """config.json から MT5 設定を読み込む"""
+    """config.json の mt5 セクションを読み込む"""
     try:
         if _CONFIG_PATH.exists():
             with open(_CONFIG_PATH, encoding="utf-8") as f:
@@ -51,7 +51,7 @@ def is_available() -> bool:
 
 
 def _resolve_symbol(symbol: str) -> str | None:
-    """Webhook のシンボル名を MT5 のシンボル名に解決する"""
+    """Webhook のシンボル名をターミナルのシンボル名に解決する"""
     if not mt5:
         return None
     info = mt5.symbol_info(symbol)
@@ -71,7 +71,7 @@ def _get_filling_modes_to_try(symbol: str) -> list[int]:
     """
     シンボルがサポートする注文約定タイプのリストを返す（優先順）
     SYMBOL_FILLING: 1=FOK, 2=IOC, 4=RETURN
-    ORDER_FILLING: 0=FOK, 1=IOC, 2=RETURN（MT5 Python の実際の値）
+    ORDER_FILLING: 0=FOK, 1=IOC, 2=RETURN（MetaTrader5 Python の実際の値）
     """
     if not mt5:
         return [1, 2, 0]  # IOC, RETURN, FOK の順で試行
@@ -99,7 +99,7 @@ def send_order(
     terminal_path: str | None = None,
 ) -> OrderResult:
     """
-    MT5 に成行注文を送信する
+    MetaTrader 5 に成行注文を送信する
 
     Returns:
         OrderResult: 実行結果（成功時は symbol, type, volume, price を含む）
@@ -118,7 +118,7 @@ def send_order(
         err = mt5.last_error()
         return OrderResult(
             success=False,
-            message=f"MT5 の初期化に失敗しました。MT5 ターミナルが起動しているか確認してください。error={err}",
+            message=f"MetaTrader 5 の初期化に失敗しました。ターミナルが起動しているか確認してください。error={err}",
         )
 
     try:
@@ -126,7 +126,7 @@ def send_order(
         if resolved is None:
             return OrderResult(
                 success=False,
-                message=f"シンボル '{symbol}' が見つかりません。MT5 の Market Watch で確認してください。",
+                message=f"シンボル '{symbol}' が見つかりません。Market Watch で確認してください。",
             )
         symbol = resolved
 
@@ -189,7 +189,6 @@ def send_order(
 
             result = mt5.order_send(request)
 
-            # 10030 (Unsupported filling mode) の場合は次のモードを試行
             if result is not None and result.retcode != 10030:
                 break
 
@@ -213,7 +212,6 @@ def send_order(
         exec_price = getattr(result, "price", price)
         deal_id = getattr(result, "deal", None)
 
-        # 約定時間（history_deals_get はブロックする場合があるため現在時刻を使用）
         exec_time = datetime.now()
 
         return OrderResult(
@@ -234,14 +232,14 @@ def send_order(
 
 
 def execute_from_webhook(payload: dict[str, Any], config: dict[str, Any] | None = None) -> OrderResult:
-    """Webhook ペイロードから MT5 注文を実行する"""
+    """Webhook ペイロードから MetaTrader 5 注文を実行する"""
     if config is None:
         config = _load_mt5_config()
 
     if not config.get("enabled", False):
         return OrderResult(
             success=False,
-            message="MT5 が無効です。config.json の mt5.enabled を true に設定してください。",
+            message="MetaTrader 5 連携が無効です。config.json の mt5.enabled を true に設定してください。",
         )
 
     symbol = payload.get("symbol") or payload.get("symbol_name")

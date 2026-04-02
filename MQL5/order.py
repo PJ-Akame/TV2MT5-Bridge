@@ -1,6 +1,6 @@
 """
-MT5 オーダー実行スクリプト
-1. MT5 起動確認
+MetaTrader 5 オーダー実行スクリプト（Python ブリッジ）
+1. ターミナル起動確認
 2. 取引アカウント確認
 3. ポジション上限チェック（上限未満の時のみ実行）
 4. オーダー実行
@@ -43,7 +43,7 @@ _CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "config.json"
 
 
 def _load_config() -> dict[str, Any]:
-    """config.json から MT5 設定を読み込む"""
+    """config.json から MetaTrader 5 連携設定（mt5 セクション）を読み込む"""
     try:
         if _CONFIG_PATH.exists():
             with open(_CONFIG_PATH, encoding="utf-8") as f:
@@ -68,7 +68,7 @@ class OrderResult:
 
 def _check_mt5_running(terminal_path: str | None = None) -> tuple[bool, str]:
     """
-    MT5 起動確認
+    MetaTrader 5 ターミナル起動確認
 
     Returns:
         (成功, メッセージ) 失敗時はメッセージに「未起動」等を返す
@@ -81,7 +81,7 @@ def _check_mt5_running(terminal_path: str | None = None) -> tuple[bool, str]:
         init_params["path"] = terminal_path
 
     if not mt5.initialize(**init_params):
-        return False, "MT5 が未起動です。ターミナルを起動してください"
+        return False, "MetaTrader 5 が未起動です。ターミナルを起動してください"
 
     return True, ""
 
@@ -118,7 +118,7 @@ def execute_order(
     """
     オーダーを実行する（3ステップフロー）
 
-    1. MT5 起動確認
+    1. ターミナル起動確認
     2. 取引アカウント確認
     3. ポジション上限チェック（position_limit 未満の時のみ実行）
     4. オーダー実行
@@ -127,7 +127,7 @@ def execute_order(
         symbol: 通貨ペア
         action: "buy" または "sell"
         volume: ロット数
-        config: MT5 設定（省略時は config から読み込み）
+        config: config の mt5 セクション相当（省略時は config.json から読み込み）
 
     Returns:
         OrderResult: 実行結果（成功時は symbol, type, volume, price を含む）
@@ -138,24 +138,21 @@ def execute_order(
     terminal_path = (config.get("terminal_path") or "").strip() or None
     expected_login = int(config.get("account_login", 0))
 
-    # 1. MT5 起動確認
     ok, msg = _check_mt5_running(terminal_path)
     if not ok:
         return OrderResult(success=False, message=msg)
 
     try:
-        # 2. 取引アカウント確認
         ok, msg = _check_account(expected_login)
         if not ok:
             return OrderResult(success=False, message=msg)
     finally:
         _safe_shutdown()
 
-    # 3. ポジション上限チェック（上限未満の時のみオーダー実行）
     position_limit = int(config.get("position_limit", 1))
     if position_limit > 0:
         try:
-            from MT5.get_positions import get_positions
+            from MQL5.get_positions import get_positions
         except ImportError:
             from get_positions import get_positions
         current_count = get_positions(symbol=symbol)
@@ -165,9 +162,8 @@ def execute_order(
                 message=f"ポジション上限に達しています。{symbol}: 現在 {current_count} 件、上限 {position_limit} 件",
             )
 
-    # 4. オーダー実行（send_order は内部で initialize/shutdown を行う）
     try:
-        from MT5.mt5_order import send_order
+        from MQL5.mt5_order import send_order
     except ImportError:
         from mt5_order import send_order
 

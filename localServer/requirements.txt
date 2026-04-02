@@ -1,2 +1,2 @@
 # Webhook サーバー（標準ライブラリのみ）
-# MT5 注文機能を使用する場合: pip install -r ../MT5/requirements.txt
+# MetaTrader 5 注文機能を使用する場合: pip install -r ../MQL5/requirements.txt

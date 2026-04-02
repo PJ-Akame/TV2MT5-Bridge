@@ -99,32 +99,49 @@ class WebhookHandler(BaseHTTPRequestHandler):
 
         self._output_to_terminal(result)
 
-        # MT5 注文（config で有効な場合のみ）
-        self._execute_mt5_order(result)
+        # config.webhook.job で指定されたジョブを実行
+        self._run_job(result)
 
         return result
 
+    def _run_job(self, payload: dict) -> None:
+        """config.webhook.job に応じて処理ジョブを実行する"""
+        try:
+            from config_loader import load_config
+            config = load_config()
+        except Exception as e:
+            _write_log(f"[Job] スキップ: config 読み込みエラー - {e}\n")
+            return
+
+        job = config.get("webhook", {}).get("job", "mt5_order")
+        if job == "mt5_order":
+            self._execute_mt5_order(payload)
+        elif job == "log_only":
+            pass  # ログ出力のみ（既に _output_to_terminal で実施済み）
+        else:
+            _write_log(f"[Job] 不明な job: '{job}' (mt5_order / log_only を指定してください)\n")
+
     def _execute_mt5_order(self, payload: dict) -> None:
-        """Webhook ペイロードから MT5 注文を実行し、結果をログに記録する"""
+        """Webhook ペイロードから MetaTrader 5 注文を実行し、結果をログに記録する"""
         # config で取引が有効か判定
         try:
             from config_loader import load_config
             config = load_config()
             if not config.get("mt5", {}).get("enabled", False):
-                _write_log("[MT5] スキップ: mt5.enabled が false です\n")
+                _write_log("[MQL5] スキップ: mt5.enabled が false です\n")
                 return
         except Exception as e:
-            _write_log(f"[MT5] スキップ: config 読み込みエラー - {e}\n")
+            _write_log(f"[MQL5] スキップ: config 読み込みエラー - {e}\n")
             return
 
         try:
-            # プロジェクトルートを path に追加して MT5 をインポート
+            # プロジェクトルートを path に追加して MQL5 パッケージをインポート
             _root = Path(__file__).resolve().parent.parent
             if str(_root) not in sys.path:
                 sys.path.insert(0, str(_root))
-            from MT5.order import execute_order
+            from MQL5.order import execute_order
         except ImportError as e:
-            _write_log(f"[MT5] スキップ: MT5 モジュールのインポートに失敗 - {e}\n")
+            _write_log(f"[MQL5] スキップ: MQL5 モジュールのインポートに失敗 - {e}\n")
             return
 
         mt5_config = config.get("mt5", {})
@@ -156,7 +173,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
         volume = float(payload_to_use.get("volume", payload_to_use.get("quantity", mt5_config.get("volume", 0.01))))
 
         if not symbol:
-            _write_log("[MT5] スキップ: symbol が指定されていません（ペイロードにも config.mt5.symbol にもありません）\n")
+            _write_log("[MQL5] スキップ: symbol が指定されていません（ペイロードにも config.mt5.symbol にもありません）\n")
             return
 
         # {{ticker}} が "EXCHANGE:SYMBOL" 形式の場合はシンボル部分のみ使用
@@ -166,15 +183,15 @@ class WebhookHandler(BaseHTTPRequestHandler):
         try:
             order_result = execute_order(symbol=str(symbol), action=str(action), volume=volume)
             mt5_log = (
-                f"[MT5] {'成功' if order_result.success else '失敗'}: {order_result.message}"
+                f"[MQL5] {'成功' if order_result.success else '失敗'}: {order_result.message}"
                 + (f" (order={order_result.order_id})" if order_result.order_id else "")
             )
             _write_log(f"{mt5_log}\n")
             sys.stdout.write(f"\n{mt5_log}\n")
             sys.stdout.flush()
         except Exception as e:
-            _write_log(f"[MT5] 例外: execute_order 実行中 - {e}\n")
-            sys.stderr.write(f"[MT5] 例外: {e}\n")
+            _write_log(f"[MQL5] 例外: execute_order 実行中 - {e}\n")
+            sys.stderr.write(f"[MQL5] 例外: {e}\n")
             sys.stderr.flush()
 
     def _output_to_terminal(self, data: dict) -> None:

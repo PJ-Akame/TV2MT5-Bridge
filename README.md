@@ -34,15 +34,15 @@ flowchart TB
         G[ログ出力]
         H{mt5.enabled?}
         I[config 読み込み]
-        J[MT5 モジュール インポート]
+        J[MQL5 パッケージ インポート]
         K[symbol/action/volume 取得]
         L{symbol あり?}
         M[EXCHANGE:SYMBOL 形式を SYMBOL に変換]
         N[execute_order 呼び出し]
     end
 
-    subgraph MT5["MT5 オーダー"]
-        O[MT5 起動確認]
+    subgraph MQL5Bridge["MetaTrader 5 オーダー"]
+        O[ターミナル起動確認]
         P[アカウント確認]
         Q[ポジション上限チェック]
         R[成行注文送信]
@@ -76,9 +76,10 @@ flowchart TB
 | 1. TradingView | アラート条件が満たされると、設定した Webhook URL へ POST 送信 |
 | 2. Cloudflare Tunnel | HTTPS で受信し、localhost:8080 へ転送 |
 | 3. LocalServer | POST ボディを JSON としてパースし、ログに記録 |
-| 4. MT5 判定 | `config.mt5.enabled` が `true` の場合のみ注文処理へ |
-| 5. パラメータ取得 | ペイロードから symbol, action, volume を取得（不足時は config で補完） |
-| 6. MT5 注文 | MT5 起動確認 → アカウント確認 → ポジション上限チェック → 成行注文送信 |
+| 4. ジョブ判定 | `config.webhook.job` が `mt5_order` の場合のみ MetaTrader 5 注文処理へ（`log_only` の場合はログのみ） |
+| 5. 接続判定 | `config.mt5.enabled` が `true` の場合のみ注文処理へ |
+| 6. パラメータ取得 | ペイロードから symbol, action, volume を取得（不足時は config で補完） |
+| 7. 注文送信 | ターミナル起動確認 → アカウント確認 → ポジション上限チェック → 成行注文送信 |
 
 ---
 
@@ -88,7 +89,7 @@ flowchart TB
 
 | メソッド | URL | 説明 |
 |----------|-----|------|
-| POST | `https://your-hostname.com` | Webhook 受信・MT5 注文実行 |
+| POST | `https://your-hostname.com` | Webhook 受信・MetaTrader 5 注文実行 |
 | GET | `https://your-hostname.com` | ヘルスチェック（`{"message":"Webhook server is running"}` を返す） |
 
 ### リクエスト形式
@@ -96,7 +97,7 @@ flowchart TB
 - **Content-Type**: `application/json`（推奨）
 - **Body**: JSON 形式
 
-### ペイロード項目（MT5 注文用）
+### ペイロード項目（MetaTrader 5 注文用）
 
 | 項目 | 型 | 必須 | 説明 | フォールバック |
 |------|-----|------|------|----------------|
@@ -177,6 +178,12 @@ copy config\config.json.example config\config.json
 | `server.host` | string | バインドするホスト。全インターフェースで受信する場合は `0.0.0.0` |
 | `server.port` | number | LocalServer のポート番号（デフォルト: 8080） |
 
+#### webhook（Webhook 処理）
+
+| 項目 | 型 | 説明 |
+|------|-----|------|
+| `webhook.job` | string | 受信後の処理ジョブ。`mt5_order`: MetaTrader 5 への成行注文実行 / `log_only`: ログ出力のみ |
+
 #### tunnel（Cloudflare Tunnel）
 
 | 項目 | 型 | 説明 |
@@ -189,14 +196,14 @@ copy config\config.json.example config\config.json
 
 | 項目 | 型 | 説明 |
 |------|-----|------|
-| `mt5.enabled` | boolean | MT5 注文を有効にする。`false` の場合は Webhook 受信時も注文しない |
+| `mt5.enabled` | boolean | MetaTrader 5 への注文を有効にする。`false` の場合は Webhook 受信時も注文しない |
 | `mt5.volume` | number | デフォルトロット数。Webhook に volume が含まれない場合に使用（例: 0.01） |
 | `mt5.magic` | number | EA ID（マジック番号）。注文・ポジションの識別用。他 EA と重複しない値にする |
-| `mt5.comment` | string | 注文コメント。MT5 では 31 文字まで |
-| `mt5.terminal_path` | string | MT5 ターミナルの実行ファイルパス。空の場合は自動検出 |
+| `mt5.comment` | string | 注文コメント。ターミナルでは 31 文字まで |
+| `mt5.terminal_path` | string | MetaTrader 5 ターミナルの実行ファイルパス。空の場合は自動検出 |
 | `mt5.symbol` | string | 対象シンボル（例: USDJPY, BTCUSD）。ペイロードに symbol がない場合のデフォルト |
 | `mt5.position_limit` | number | 同一シンボルあたりのポジション上限。この件数に達すると新規オーダーを拒否。`0` の場合はチェックしない |
-| `mt5.account_login` | number | 想定する MT5 アカウント番号。一致しないアカウントでログイン中はオーダーを拒否。`0` の場合はチェックしない |
+| `mt5.account_login` | number | 想定するアカウント番号。一致しないアカウントでログイン中はオーダーを拒否。`0` の場合はチェックしない |
 
 ### トークンの取得
 
@@ -230,14 +237,14 @@ python main.py
 
 受信データは `LocalServer/logs/webhook.log` に記録されます。
 
-### MT5 注文（オプション）
+### MetaTrader 5 注文（オプション・MQL5 パッケージ）
 
-Webhook で受信したシグナルを MetaTrader 5 に成行注文で送信できます。MT5 ツールは `MT5/` ディレクトリに配置されています。
+Webhook で受信したシグナルを MetaTrader 5 に成行注文で送信できます。Python モジュールはリポジトリ直下の `MQL5/` にあります（`extras/MQL5/` の `.mq5` ソースとは別）。
 
 **前提条件**
 
 - MetaTrader 5 ターミナルが起動していること
-- `pip install -r MT5/requirements.txt` でパッケージをインストール
+- `pip install -r MQL5/requirements.txt` でパッケージをインストール
 - `config.json` の `mt5.enabled` を `true` に設定
 
 詳細は [Webhook POST リファレンス](#webhook-post-リファレンス) を参照。
@@ -331,7 +338,7 @@ SMCSE/
 │   ├── config.json.example   # 設定テンプレート
 │   └── config.json           # 実際の設定（Git に含めない）
 ├── LocalServer/              # Webhook 受信サーバー
-├── MT5/                      # MetaTrader 5 注文ツール
+├── MQL5/                     # MetaTrader 5 連携（Python）。MQL5 ソースは extras/MQL5/
 ├── tunnel/                   # Cloudflare Tunnel
 ├── PineScripts/              # TradingView 用 Pine Script
 └── README.md

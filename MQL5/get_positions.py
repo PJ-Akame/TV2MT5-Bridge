@@ -1,5 +1,5 @@
 """
-MT5 の現在のポジションを取得するスクリプト
+MetaTrader 5 の現在のポジションを取得するスクリプト
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ _CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "config.json"
 
 
 def _get_terminal_path() -> str | None:
-    """config.json から MT5 ターミナルパスを取得"""
+    """config.json からターミナルパスを取得"""
     try:
         if _CONFIG_PATH.exists():
             with open(_CONFIG_PATH, encoding="utf-8") as f:
@@ -103,7 +103,7 @@ def _get_positions_detail(symbol: str | None = None) -> list[dict[str, Any]]:
 def main() -> int:
     """コマンドラインから実行（ポジション数のみ出力）"""
     if mt5 is None:
-        print("MetaTrader5 パッケージがインストールされていません。pip install -r MT5/requirements.txt", file=sys.stderr)
+        print("MetaTrader5 パッケージがインストールされていません。pip install -r MQL5/requirements.txt", file=sys.stderr)
         return 1
 
     args = [a for a in sys.argv[1:] if not a.startswith("--")]

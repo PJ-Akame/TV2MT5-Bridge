@@ -1,6 +1,8 @@
 """
-MT5 ツール
-TradingView Webhook のシグナルを MetaTrader 5 に送信する
+MQL5 / MetaTrader 5 連携（Python）
+
+TradingView Webhook のシグナルを MetaTrader 5 ターミナルに送信する。
+ディレクトリ名は `MQL5`。公式の MetaTrader 5 Python パッケージは `import MetaTrader5`。
 """
 
 from .get_positions import get_positions
