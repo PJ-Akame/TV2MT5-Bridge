@@ -2,6 +2,13 @@
 
 TradingView のシグナルアラートを Webhook で受信し、ローカルで処理するシステム。
 
+## バージョン
+
+| 版 | 位置づけ |
+|----|----------|
+| **2.0**（現行） | Webhook 受信・`localServer`・Tunnel・**MT5 オーダー**に加え、TradingView 側の **Pine Script**（`PineScripts/SMCExecutionSignal.pine`、`smcse.entry.v1`）まで含めた一式。 |
+| 1.0 | Webhook 受信から MT5 へのオーダー機能のみ。 |
+
 ## 構成
 
 ```
@@ -9,7 +16,7 @@ TradingView アラート
     ↓ Webhook (POST)
 https://your-hostname.com (Cloudflare Tunnel)
     ↓
-LocalServer (Python) ← localhost:8080
+localServer (Python) ← localhost:8080
 ```
 
 ---
@@ -28,23 +35,23 @@ flowchart TB
         D[localhost:8080 へ転送]
     end
 
-    subgraph LS["LocalServer"]
+    subgraph LS["localServer"]
         E[POST 受信]
         F[JSON パース]
         G[ログ出力]
         H{mt5.enabled?}
         I[config 読み込み]
         J[MQL5 パッケージ インポート]
-        K[symbol/action/volume 取得]
-        L{symbol あり?}
-        M[EXCHANGE:SYMBOL 形式を SYMBOL に変換]
+        K[parse_webhook_for_mt5]
+        L{注文意図あり?}
+        M[EXCHANGE:SYMBOL を SYMBOL に変換済み]
         N[execute_order 呼び出し]
     end
 
     subgraph MQL5Bridge["MetaTrader 5 オーダー"]
         O[ターミナル起動確認]
         P[アカウント確認]
-        Q[ポジション上限チェック]
+        Q[ポジション上限・取引禁止時間帯]
         R[成行注文送信]
     end
 
@@ -60,7 +67,7 @@ flowchart TB
     I --> J
     J --> K
     K --> L
-    L -->|No| T[スキップ]
+    L -->|No（No trade 等）| T[スキップ]
     L -->|Yes| M
     M --> N
     N --> O
@@ -75,11 +82,11 @@ flowchart TB
 |----------|------|
 | 1. TradingView | アラート条件が満たされると、設定した Webhook URL へ POST 送信 |
 | 2. Cloudflare Tunnel | HTTPS で受信し、localhost:8080 へ転送 |
-| 3. LocalServer | POST ボディを JSON としてパースし、ログに記録 |
+| 3. localServer | POST ボディを JSON としてパースし、ログに記録 |
 | 4. ジョブ判定 | `config.webhook.job` が `mt5_order` の場合のみ MetaTrader 5 注文処理へ（`log_only` の場合はログのみ） |
 | 5. 接続判定 | `config.mt5.enabled` が `true` の場合のみ注文処理へ |
-| 6. パラメータ取得 | ペイロードから symbol, action, volume を取得（不足時は config で補完） |
-| 7. 注文送信 | ターミナル起動確認 → アカウント確認 → ポジション上限チェック → 成行注文送信 |
+| 6. ペイロード解釈 | `MQL5.webhook_parse.parse_webhook_for_mt5` で `smcse.entry.v1` またはレガシー形式を正規化（`message` / `payload` 等のラップも展開） |
+| 7. 注文送信 | `order.execute_order`: ターミナル起動 → アカウント確認 → ポジション上限 → **取引禁止時間帯（`no_trade_windows`）** → `send_order` で成行 |
 
 ---
 
@@ -97,21 +104,58 @@ flowchart TB
 - **Content-Type**: `application/json`（推奨）
 - **Body**: JSON 形式
 
-### ペイロード項目（MetaTrader 5 注文用）
+### ペイロード（現在の想定）
+
+#### 1) `smcse.entry.v1`（`SMCExecutionSignal.pine` / Mxwll Suite のエントリー評価）
+
+TradingView の `alert()` が **有効な JSON 文字列のみ**を本文にすると、Webhook は `application/json` でそのオブジェクトが POST されます。
+
+| 項目 | 型 | 必須 | 説明 |
+|------|-----|------|------|
+| `schema` | string | 推奨 | 固定値 `"smcse.entry.v1"`。省略時も `result`＋`symbol` 等が揃えば v1 として解釈される |
+| `result` | string | ○ | `"Buy"` / `"Sell"` / `"No trade"`（大文字小文字無視。`No trade` 時は MT5 注文しない） |
+| `symbol` | string | ○* | 例: `FX:USDJPY`（`syminfo.tickerid`）。`EXCHANGE:SYMBOL` は注文時に `SYMBOL` のみ使用 |
+| `upperObRef` | string | - | 上側 OB 参照価格の文字列表現または `"n/a"` |
+| `upperObCount` | number | - | 範囲内・上側 OB 件数 |
+| `lowerObRef` | string | - | 下側 OB 参照価格または `"n/a"` |
+| `lowerObCount` | number | - | 範囲内・下側 OB 件数 |
+| `lastPrice` | string | - | 判定時の終値（ミントック形式の文字列） |
+| `positionPct` | number \| null | - | 最近 OB 間における価格位置（％）。該当なしは `null` |
+| `volume` | number | - | ロット。省略時は `config.mt5.volume` |
+
+\* `symbol` が無い場合は従来どおり `config.mt5.symbol` にフォールバック。
+
+**例**
+
+```json
+{
+  "schema": "smcse.entry.v1",
+  "result": "Buy",
+  "symbol": "FX:USDJPY",
+  "upperObRef": "1672.646",
+  "upperObCount": 2,
+  "lowerObRef": "1589.987",
+  "lowerObCount": 1,
+  "lastPrice": "1650.123",
+  "positionPct": 35.42
+}
+```
+
+#### 2) レガシー（`symbol` + `action`）
 
 | 項目 | 型 | 必須 | 説明 | フォールバック |
 |------|-----|------|------|----------------|
 | `symbol` | string | ○* | 通貨ペア（例: BTCUSD, USDJPY） | `symbol_name`, `ticker`, `config.mt5.symbol` |
-| `action` | string | ○* | 注文方向 | `trade`, `order`, `side`, `"buy"` |
+| `action` | string | ○* | 注文方向 `buy` / `sell` | `trade`, `order`, `side`, `"buy"` |
 | `volume` | number | - | ロット数 | `quantity`, `config.mt5.volume` (0.01) |
 
-\* symbol はペイロードまたは config のいずれかで必須。action は未指定時 `"buy"`。
+\* symbol はペイロードまたは config のいずれかで必須。action は未指定時 `"buy"`（`smcse.entry.v1` では使わない）。
 
 ### シンボル形式
 
 - `BINANCE:BTCUSD` のように `EXCHANGE:SYMBOL` 形式の場合は、`SYMBOL` 部分のみ使用（例: `BTCUSD`）
 
-### ペイロード例
+### ペイロード例（レガシー）
 
 **最小構成（symbol と action）**
 
@@ -119,7 +163,7 @@ flowchart TB
 {"symbol": "BTCUSD", "action": "buy"}
 ```
 
-**TradingView 形式（{{ticker}} が BINANCE:BTCUSD 等に置換される）**
+**TradingView アラートの Message 欄用（{{ticker}} が展開される）**
 
 ```json
 {"symbol": "{{ticker}}", "action": "buy"}
@@ -147,7 +191,7 @@ flowchart TB
 - **action**: `action` → `trade` → `order` → `side`
 - **volume**: `volume` → `quantity`
 
-また、`message` や `raw` が JSON 文字列の場合、その内容をパースしてマージします。
+また、上位システムが `message`（文字列またはオブジェクト） / `text` / `raw` にネストした JSON を載せる場合、および `payload` / `body` / `data` がオブジェクトの場合、その内容をマージします。POST 本文が「JSON の文字列」がさらに JSON になっている二重エンコードの場合も `webhook_handler` で展開を試みます（`smcse.entry.v1` とレガシーの両方に適用）。
 
 ---
 
@@ -171,12 +215,12 @@ copy config\config.json.example config\config.json
 
 ### 設定項目
 
-#### server（LocalServer）
+#### server（localServer）
 
 | 項目 | 型 | 説明 |
 |------|-----|------|
 | `server.host` | string | バインドするホスト。全インターフェースで受信する場合は `0.0.0.0` |
-| `server.port` | number | LocalServer のポート番号（デフォルト: 8080） |
+| `server.port` | number | localServer のポート番号（デフォルト: 8080） |
 
 #### webhook（Webhook 処理）
 
@@ -204,6 +248,8 @@ copy config\config.json.example config\config.json
 | `mt5.symbol` | string | 対象シンボル（例: USDJPY, BTCUSD）。ペイロードに symbol がない場合のデフォルト |
 | `mt5.position_limit` | number | 同一シンボルあたりのポジション上限。この件数に達すると新規オーダーを拒否。`0` の場合はチェックしない |
 | `mt5.account_login` | number | 想定するアカウント番号。一致しないアカウントでログイン中はオーダーを拒否。`0` の場合はチェックしない |
+| `mt5.no_trade_windows` | array | 取引禁止の時間帯。各要素は `{ "start": "HH:MM", "end": "HH:MM" }`。`end` が `start` より前の場合は日を跨ぐ区間（例: 23:00–06:00）。空配列 `[]` または未設定で無効 |
+| `mt5.no_trade_timezone` | string | 禁止時間の判定に使う IANA タイムゾーン（例: `America/New_York`, `Asia/Tokyo`）。空の場合はサーバーのローカル時刻。`UTC` のみは `UTC` でも可（Python 3.9+ で `zoneinfo` が使える環境を推奨） |
 
 ### トークンの取得
 
@@ -222,20 +268,20 @@ copy config\config.json.example config\config.json
 
 ---
 
-## 2. LocalServer のセットアップ
+## 2. localServer のセットアップ
 
 Webhook を受信する Python サーバー。
 
 ### 起動
 
 ```powershell
-cd LocalServer
+cd localServer
 python main.py
 ```
 
 ### ログ
 
-受信データは `LocalServer/logs/webhook.log` に記録されます。
+受信データは `localServer/logs/webhook.log` に記録されます。
 
 ### MetaTrader 5 注文（オプション・MQL5 パッケージ）
 
@@ -284,20 +330,16 @@ python main.py
 
 ## 4. TradingView の設定
 
-### Pine Script の追加
+### メイン: `SMCExecutionSignal.pine`（Mxwll Suite）
 
 1. TradingView でチャートを開く
-2. 下部の「Pine エディター」を開く
-3. `PineScripts/one_minute_alert.pine` の内容をコピー＆ペースト
-4. 「チャートに追加」をクリック
+2. 「Pine エディター」で `PineScripts/SMCExecutionSignal.pine` を貼り付け、チャートに追加
+3. **アラートを作成** → 条件で本インジケーターを選び、`alert()` による通知を有効化（Webhook URL を設定）
+4. **`smcse.entry.v1` の JSON** が本文として POST されます（ロット未指定時は `config.mt5.volume`）。詳細は [Webhook POST リファレンス](#webhook-post-リファレンス) の v1 形式を参照
 
-### アラートの作成
+### レガシー検証用（任意）
 
-1. チャート上で右クリック → 「アラートを追加」
-2. 条件: 「1分毎アラート」
-3. 通知: 「Webhook URL」を選択
-4. URL: `https://your-subdomain.yourdomain.com`（config の `tunnel.hostname` に対応）
-5. メッセージ: スクリプトのデフォルト（`{"symbol":"{{ticker}}","action":"buy"}`）を使用
+レガシーの `{"symbol","action"}` だけ試す場合は、同等の JSON をアラートのメッセージに手入力するか、独自の軽量 Pine を用意してください（リポジトリに分足テスト専用の `one_minute_alert.pine` は **含まれていません**。必要なら別途作成してください。）
 
 ---
 
@@ -313,9 +355,9 @@ Webhook と Tunnel を同時に起動します。Ctrl+C で終了。
 
 ### 個別起動
 
-1. **LocalServer** を起動
+1. **Webhook サーバー（`localServer`）** を起動
    ```powershell
-   cd LocalServer
+   cd localServer
    python main.py
    ```
 
@@ -337,7 +379,7 @@ SMCSE/
 ├── config/
 │   ├── config.json.example   # 設定テンプレート
 │   └── config.json           # 実際の設定（Git に含めない）
-├── LocalServer/              # Webhook 受信サーバー
+├── localServer/              # Webhook 受信サーバー
 ├── MQL5/                     # MetaTrader 5 連携（Python）。MQL5 ソースは extras/MQL5/
 ├── tunnel/                   # Cloudflare Tunnel
 ├── PineScripts/              # TradingView 用 Pine Script
@@ -362,6 +404,6 @@ taskkill /PID <PID> /F
 
 ### 外部から受信できない
 
-- LocalServer と Tunnel の両方が起動しているか確認
+- localServer と Tunnel の両方が起動しているか確認
 - Cloudflare ダッシュボードでトンネルが Healthy か確認
 - Ingress の Service が `http://localhost:8080` になっているか確認

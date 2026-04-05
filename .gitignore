@@ -6,7 +6,6 @@ tunnel/bin/cloudflared
 tunnel/bin/cloudflared.exe
 
 # ログ
-LocalServer/logs/
 localServer/logs/
 *.log
 

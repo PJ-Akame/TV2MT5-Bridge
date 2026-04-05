@@ -124,7 +124,7 @@ def run_tunnel() -> int:
         print("=" * 50)
         print()
         print(f"  転送先: {tunnel_url}")
-        print(f"  (LocalServer が localhost:{port} で起動している必要があります)")
+        print(f"  (localServer が localhost:{port} で起動している必要があります)")
         print()
         print("  config に tunnel.token を設定すると Named Tunnel を利用できます")
         print()

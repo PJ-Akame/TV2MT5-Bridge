@@ -19,6 +19,13 @@
     "terminal_path": "",
     "symbol": "USDJPY",
     "position_limit": 1,
-    "account_login": 0
+    "account_login": 0,
+    "no_trade_windows": [
+      { "start": "00:00", "end": "01:00" },
+      { "start": "07:00", "end": "08:00" },
+      { "start": "11:30", "end": "12:30" },
+      { "start": "13:30", "end": "14:00" }
+    ],
+    "no_trade_timezone": "UTC"
   }
 }

@@ -16,7 +16,7 @@ def get_config_path() -> Path:
 
 def get_server_port() -> int:
     """
-    サーバーポートを取得する（LocalServer と同期）
+    サーバーポートを取得する（localServer と同期）
 
     Returns:
         ポート番号

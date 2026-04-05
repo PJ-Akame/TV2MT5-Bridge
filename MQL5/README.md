@@ -27,13 +27,19 @@ pip install -r MQL5/requirements.txt
   "volume": 0.01,
   "magic": 234000,
   "comment": "SMCSE",
-  "terminal_path": ""
+  "terminal_path": "",
+  "no_trade_windows": [
+    { "start": "23:00", "end": "06:00" }
+  ],
+  "no_trade_timezone": "America/New_York"
 }
 ```
 
+`no_trade_windows` が空なら取引禁止チェックは行いません。
+
 ## 使い方
 
-LocalServer の Webhook 受信時に、`mt5.enabled` が `true` の場合に自動で注文が実行されます。
+localServer の Webhook 受信時に、`mt5.enabled` が `true` の場合に自動で注文が実行されます。
 
 直接呼び出す場合:
 
@@ -44,6 +50,15 @@ result = send_order(symbol="USDJPY", action="buy", volume=0.01)
 
 result = execute_from_webhook({"symbol": "USDJPY", "action": "sell"})
 ```
+
+## webhook_parse.py
+
+TradingView の POST JSON を **`parse_webhook_for_mt5(payload, mt5_config)`** で正規化します。
+
+- **`smcse.entry.v1`**: `result` → `buy` / `sell`、**`No trade` はスキップ**（注文なし）
+- **レガシー**: `symbol` + `action`
+
+`flatten_tradingview_payload` で `message` / `text` / `raw` 内の JSON をマージします。
 
 ## order.py
 

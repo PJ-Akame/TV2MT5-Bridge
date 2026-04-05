@@ -232,7 +232,7 @@ def send_order(
 
 
 def execute_from_webhook(payload: dict[str, Any], config: dict[str, Any] | None = None) -> OrderResult:
-    """Webhook ペイロードから MetaTrader 5 注文を実行する"""
+    """Webhook ペイロードから MetaTrader 5 注文を実行する（smcse.entry.v1 / レガシー対応）"""
     if config is None:
         config = _load_mt5_config()
 
@@ -242,21 +242,18 @@ def execute_from_webhook(payload: dict[str, Any], config: dict[str, Any] | None 
             message="MetaTrader 5 連携が無効です。config.json の mt5.enabled を true に設定してください。",
         )
 
-    symbol = payload.get("symbol") or payload.get("symbol_name")
-    action = payload.get("action") or payload.get("trade") or payload.get("order")
+    from .webhook_parse import WebhookOrderSkip, flatten_tradingview_payload, parse_webhook_for_mt5
 
-    if not symbol or not action:
-        return OrderResult(
-            success=False,
-            message="symbol と action が必須です。",
-        )
+    merged = flatten_tradingview_payload(payload)
+    parsed = parse_webhook_for_mt5(payload, config)
+    if isinstance(parsed, WebhookOrderSkip):
+        return OrderResult(success=False, message=parsed.reason)
 
-    volume = float(payload.get("volume", config.get("volume", 0.01)))
     magic = int(config.get("magic", 234000))
-    comment = str(payload.get("message") or config.get("comment", "SMCSE"))[:31]
+    comment = parsed.comment if parsed.comment is not None else str(config.get("comment", "SMCSE"))[:31]
 
-    sl = payload.get("sl") or payload.get("stop_loss")
-    tp = payload.get("tp") or payload.get("take_profit")
+    sl = merged.get("sl") or merged.get("stop_loss")
+    tp = merged.get("tp") or merged.get("take_profit")
     if sl is not None:
         sl = float(sl)
     if tp is not None:
@@ -265,11 +262,11 @@ def execute_from_webhook(payload: dict[str, Any], config: dict[str, Any] | None 
     terminal_path = config.get("terminal_path") or None
 
     return send_order(
-        symbol=str(symbol),
-        action=str(action),
-        volume=volume,
+        symbol=str(parsed.symbol),
+        action=str(parsed.action),
+        volume=parsed.volume,
         magic=magic,
-        comment=comment,
+        comment=comment[:31],
         sl=sl,
         tp=tp,
         terminal_path=terminal_path,

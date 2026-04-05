@@ -1,6 +1,6 @@
 """
 SMCSE 統合起動スクリプト
-LocalServer（Webhook）と Cloudflare Tunnel を同時に起動する
+localServer（Webhook）と Cloudflare Tunnel を同時に起動する
 """
 
 import signal
@@ -18,12 +18,10 @@ def main() -> int:
     print(f"  プロジェクトルート: {_PROJECT_ROOT}")
     print()
 
-    # LocalServer（Webhook）
-    webhook_script = _PROJECT_ROOT / "LocalServer" / "main.py"
+    # localServer（Webhook）
+    webhook_script = _PROJECT_ROOT / "localServer" / "main.py"
     if not webhook_script.exists():
-        webhook_script = _PROJECT_ROOT / "localServer" / "main.py"
-    if not webhook_script.exists():
-        print("[エラー] LocalServer/main.py が見つかりません")
+        print("[エラー] localServer/main.py が見つかりません")
         return 1
 
     # Tunnel
@@ -54,7 +52,7 @@ def main() -> int:
 
     try:
         # Webhook 起動
-        print("LocalServer（Webhook）を起動...")
+        print("localServer（Webhook）を起動...")
         p_webhook = subprocess.Popen(
             [sys.executable, str(webhook_script)],
             cwd=str(_PROJECT_ROOT),
@@ -76,7 +74,7 @@ def main() -> int:
         print()
         print("=" * 50)
         print("  SMCSE 起動完了")
-        print("  - Webhook: LocalServer")
+        print("  - Webhook: localServer")
         print("  - Tunnel: Cloudflare Tunnel")
         print("  Ctrl+C で終了")
         print("=" * 50)

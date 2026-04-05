@@ -3,7 +3,8 @@ MetaTrader 5 オーダー実行スクリプト（Python ブリッジ）
 1. ターミナル起動確認
 2. 取引アカウント確認
 3. ポジション上限チェック（上限未満の時のみ実行）
-4. オーダー実行
+4. 取引禁止時間帯チェック（config.no_trade_windows）
+5. オーダー実行
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ import json
 import sys
 import threading
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -109,25 +111,100 @@ def _check_account(expected_login: int) -> tuple[bool, str]:
     return True, ""
 
 
+def _parse_hhmm_to_minutes(s: Any) -> int | None:
+    """'HH:MM' をその日の 0 時からの分に変換。不正なら None。"""
+    if s is None:
+        return None
+    parts = str(s).strip().split(":")
+    if len(parts) != 2:
+        return None
+    try:
+        h, m = int(parts[0]), int(parts[1])
+    except ValueError:
+        return None
+    if h == 24 and m == 0:
+        return 24 * 60
+    if not (0 <= h < 24 and 0 <= m < 60):
+        return None
+    return h * 60 + m
+
+
+def _now_for_no_trade_check(config: dict[str, Any]) -> datetime:
+    """no_trade_timezone があればそのタイムゾーンの現在時刻、無ければシステムローカル。"""
+    tz_name = (config.get("no_trade_timezone") or "").strip()
+    if not tz_name:
+        return datetime.now()
+    try:
+        from zoneinfo import ZoneInfo
+
+        return datetime.now(ZoneInfo(tz_name))
+    except Exception:
+        if tz_name.upper() == "UTC":
+            return datetime.now(timezone.utc)
+        return datetime.now()
+
+
+def _minute_is_in_window(now_min: int, start_min: int, end_min: int) -> bool:
+    """開始・終了（分・当日基準）。終了が開始より前なら日跨ぎ。境界は両端含む。"""
+    if start_min == end_min:
+        return False
+    if start_min < end_min:
+        return start_min <= now_min <= end_min
+    return now_min >= start_min or now_min <= end_min
+
+
+def _is_no_trade_time_now(config: dict[str, Any]) -> tuple[bool, str]:
+    """
+    取引禁止時間帯なら (True, 理由)。エントリー可なら (False, "")。
+    no_trade_windows が空または未設定のときは常にエントリー可。
+    """
+    raw = config.get("no_trade_windows")
+    if not raw:
+        return False, ""
+    if not isinstance(raw, list):
+        return False, ""
+
+    now = _now_for_no_trade_check(config)
+    now_min = now.hour * 60 + now.minute
+
+    for idx, w in enumerate(raw):
+        if not isinstance(w, dict):
+            continue
+        start_min = _parse_hhmm_to_minutes(w.get("start"))
+        end_min = _parse_hhmm_to_minutes(w.get("end"))
+        if start_min is None or end_min is None:
+            continue
+        if _minute_is_in_window(now_min, start_min, end_min):
+            start_s, end_s = w.get("start"), w.get("end")
+            return True, (
+                f"取引禁止時間帯です（ウィンドウ {idx + 1}: {start_s}–{end_s}、"
+                f"判定時刻 {now.strftime('%Y-%m-%d %H:%M')}）"
+            )
+    return False, ""
+
+
 def execute_order(
     symbol: str,
     action: str,
     volume: float = 0.01,
     config: dict[str, Any] | None = None,
+    comment: str | None = None,
 ) -> OrderResult:
     """
-    オーダーを実行する（3ステップフロー）
+    オーダーを実行する
 
     1. ターミナル起動確認
     2. 取引アカウント確認
     3. ポジション上限チェック（position_limit 未満の時のみ実行）
-    4. オーダー実行
+    4. 取引禁止時間帯チェック（no_trade_windows）
+    5. オーダー実行
 
     Args:
         symbol: 通貨ペア
         action: "buy" または "sell"
         volume: ロット数
         config: config の mt5 セクション相当（省略時は config.json から読み込み）
+        comment: 注文コメント（省略時は config の comment。MT5 は 31 文字まで）
 
     Returns:
         OrderResult: 実行結果（成功時は symbol, type, volume, price を含む）
@@ -162,17 +239,22 @@ def execute_order(
                 message=f"ポジション上限に達しています。{symbol}: 現在 {current_count} 件、上限 {position_limit} 件",
             )
 
+    no_trade, no_trade_msg = _is_no_trade_time_now(config)
+    if no_trade:
+        return OrderResult(success=False, message=no_trade_msg)
+
     try:
         from MQL5.mt5_order import send_order
     except ImportError:
         from mt5_order import send_order
 
+    comment_used = (comment if comment is not None else str(config.get("comment", "SMCSE")))[:31]
     result = send_order(
         symbol=symbol,
         action=action,
         volume=volume,
         magic=int(config.get("magic", 234000)),
-        comment=str(config.get("comment", "SMCSE"))[:31],
+        comment=comment_used,
         terminal_path=terminal_path,
     )
 

@@ -1,7 +1,7 @@
 // This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
-// Mxwll Capital
-//@version=5
-indicator("Mxwll Suite", overlay = true, max_labels_count = 500, max_lines_count = 500, max_boxes_count = 500, max_bars_back = 500)
+// AkameGusya
+//@version=6
+indicator("SMC Execution Signal", overlay = true, max_labels_count = 500, max_lines_count = 500, max_boxes_count = 500, max_bars_back = 500)
 
 bullC       = input.color(defval = #14D990, title = "Bull Color", group = "Smart Money Concepts", inline = "7")
 bearC       = input.color(defval = #F24968, title = "Bear Color", group = "Smart Money Concepts", inline = "7")
@@ -43,6 +43,33 @@ fib2col     = input.color(title = "", defval = color.lime, inline = "2"  , group
 fib3col     = input.color(title = "", defval = color.yellow, inline = "3", group = "Auto Fibs")
 fib4col     = input.color(title = "", defval = color.orange, inline = "4", group = "Auto Fibs")
 fib5col     = input.color(title = "", defval = color.red   , group = "Auto Fibs", inline = "5")
+
+inpTfMin    = input.int(15, "時間足(分)", minval = 1, maxval = 1440, group = "SMA", tooltip = "SMA計算に使う分足(1–1440)。チャート足と同じ分数なら通常のSMAに相当。日足以上は別途シンボル足の変更を検討。")
+inpSma1     = input.int(20, "SMA1", minval = 1, group = "SMA")
+inpSma2     = input.int(50, "SMA2", minval = 1, group = "SMA")
+
+inpPosPipsRange = input.float(20.0, "Pips range", minval = 0.0, step = 0.1, group = "Position Range", tooltip = "現ポジ基準価格からのピップ幅（片側）。価格帯は 基準±このpips。0で価格オフセットなし。")
+inpPosBarsRange = input.int(100, "Bars range", minval = 1, group = "Position Range", tooltip = "現在バーを右端とし、過去に遡るローソク足の本数（範囲の横方向）。")
+
+entryShowDbg = input.bool(true, "Show entry labels (↑ buy / ↓ sell)", group = "Entry Signal")
+inpEntryObMidLo = input.float(40.0, "OB帯・中間％ 下限", minval = 0.0, maxval = 100.0, step = 0.5, group = "Entry Signal", tooltip = "最近OB間位置％がこの値以上かつ「上限」以下のときエントリー除外（両端含む）。")
+inpEntryObMidHi = input.float(60.0, "OB帯・中間％ 上限", minval = 0.0, maxval = 100.0, step = 0.5, group = "Entry Signal", tooltip = "中間帯の上端。下限より小さい値にした場合は自動で入れ替えます。")
+inpEntryObMajorMin = input.int(1, "OB数・多い側の閾値（以下なら不成立）", minval = 0, group = "Entry Signal", tooltip = "範囲内の上側件数と下側件数のうち大きい方が、この値「以下」ならエントリーしません。既定1＝大きい方が2以上なら続行。")
+entryAlertEnable = input.bool(true, "Entry alert (SMAクロス確定足)", group = "Entry Signal", tooltip = "SMAクロス確定足に smcse.entry.v1 形式の JSON を alert します（Webhook 用）。アラートの Message は空のままかデフォルトで可。")
+
+// pip→価格差（主要FX想定: 1pip ≈ 10×mintick。指数・商品は目安のため要検証）
+f_posPipsToPrice(float pips) =>
+    pips * 10.0 * syminfo.mintick
+
+f_entryFmtPx(float x) =>
+    na(x) ? "n/a" : str.tostring(x, format.mintick)
+
+// インジ単体では基準=当該バーの終値。戦略の建値等に合わせる場合は close を差し替え
+// posRngBarStart: 範囲左端の bar_index（現在足を含む inpPosBarsRange 本）
+posRngHalfPx = f_posPipsToPrice(inpPosPipsRange)
+posRngHiPx = close + posRngHalfPx
+posRngLoPx = close - posRngHalfPx
+posRngBarStart = math.max(0, bar_index - inpPosBarsRange + 1)
 
 var bigData = map.new<string, float>()
 
@@ -314,7 +341,78 @@ var label [] dnLabel = array.new_label(1)
 var box [] highBlock = array.new_box()
 var box [] lowBlock  = array.new_box()
 
+// Area of Interest（drawAOE 外から参照するためグローバル保持）
+var box gAoeHighBox = na
+var box gAoeLowBox = na
 
+// box が [barLo,barHi]（bar_index）で時間的に重なるか
+// Order Block は box 作成時の右端が古いバーに残りがち（updateBox が最終足のときのみ実行）のため、
+// 集計右端 barHi まで仮延長して「チャート上に伸びている帯」と整合させる
+f_boxIxBarWin(box b, int barLo, int barHi) =>
+    int bl = int(b.get_left())
+    int br = math.max(int(b.get_right()), barHi)
+    not (br < barLo or bl > barHi)
+
+f_boxIxPrice(box b, float yLo, float yHi) =>
+    float bt = math.max(b.get_top(), b.get_bottom())
+    float bb = math.min(b.get_top(), b.get_bottom())
+    bb <= yHi and bt >= yLo
+
+// Order Block のみを基準±pips・バー幅内でカウント → [上, 下]
+f_countObInPipsBars(float refPx, float halfPx, int barLo, int barHi) =>
+    int up = 0
+    int dn = 0
+    float zUpLo = refPx
+    float zUpHi = refPx + halfPx
+    float zDnLo = refPx - halfPx
+    float zDnHi = refPx
+    if highBlock.size() > 0
+        for i = 0 to highBlock.size() - 1
+            bx = highBlock.get(i)
+            if f_boxIxBarWin(bx, barLo, barHi)
+                if f_boxIxPrice(bx, zUpLo, zUpHi)
+                    up += 1
+                if f_boxIxPrice(bx, zDnLo, zDnHi)
+                    dn += 1
+    if lowBlock.size() > 0
+        for i = 0 to lowBlock.size() - 1
+            bx = lowBlock.get(i)
+            if f_boxIxBarWin(bx, barLo, barHi)
+                if f_boxIxPrice(bx, zUpLo, zUpHi)
+                    up += 1
+                if f_boxIxPrice(bx, zDnLo, zDnHi)
+                    dn += 1
+    [up, dn]
+
+// 最近の Bear OB 下辺・Bull OB 上辺の参照価格のみ（OBのみ、AOI不含）
+f_nearestObEdges(float refPx) =>
+    float bestAgap = na
+    float apx = na
+    float bestBgap = na
+    float bpx = na
+    if showOB and highBlock.size() > 0
+        for i = 0 to highBlock.size() - 1
+            bx = highBlock.get(i)
+            lo = math.min(bx.get_top(), bx.get_bottom())
+            hi = math.max(bx.get_top(), bx.get_bottom())
+            if hi >= refPx
+                g = lo > refPx ? lo - refPx : 0.0
+                better = na(bestAgap) or g < bestAgap
+                if better
+                    bestAgap := g
+                    apx := lo
+    if showOB and lowBlock.size() > 0
+        for i = 0 to lowBlock.size() - 1
+            bx = lowBlock.get(i)
+            lo = math.min(bx.get_top(), bx.get_bottom())
+            hi = math.max(bx.get_top(), bx.get_bottom())
+            if refPx >= lo
+                g = refPx > hi ? refPx - hi : 0.0
+                better2 = na(bestBgap) or g < bestBgap
+                if better2
+                    bestBgap := g
+                    bpx := hi
+    [apx, bpx]
 
 drawChar(x, y, str, col, down) =>
 
@@ -629,72 +727,65 @@ drawStructureInternals() =>
 drawStructureInternals()
 
 
-drawAOE() => 
+// グローバル var（box / bool）はユーザー関数内で := 不可のため AOI 描画はトップレベルに記述
+atrDrawAoe = ta.atr(14)
 
-    atr = ta.atr(14)
+if showAOE
 
-    if showAOE 
+    if closeArr.size() > 50
 
-        if closeArr.size() > 50
+        aoiDraw    = closeArr.slice(0, 50)
+        aoi2Draw   = openArr .slice(0, 50)
 
-            aoi    = closeArr.slice(0, 50) 
-            aoi2   = openArr .slice(0, 50) 
+        maxaoiHDraw = math.max(aoiDraw.max(), aoi2Draw.max())
+        minaoiLDraw = math.min(aoiDraw.min(), aoi2Draw.min())
 
-            maxaoiH = math.max(aoi.max(), aoi2.max())
-            minaoiL = math.min(aoi.min(), aoi2.min())
+        if na(gAoeHighBox)
+            gAoeHighBox := box.new(bar_index[50], maxaoiHDraw * 1.01, bar_index + 5, maxaoiHDraw, 
+                         border_color = #00000000, 
+                         bgcolor      = color.new(#F24968, 90), 
+                         text         = "Area of Interest" , 
+                         text_size    = size.small, 
+                         text_color   = color.new(#F24968, 33) 
+                         )
+            gAoeLowBox := box.new(bar_index[50], minaoiLDraw, bar_index + 5, minaoiLDraw * .99, 
+                         border_color = #00000000, 
+                         bgcolor      = color.new(#14D990, 90), 
+                         text         = "Area of Interest" , 
+                         text_size    = size.small, 
+                         text_color   = color.new(#14D990, 33) 
+                         )
 
-            var aoeLevels = map.new<string, box>()
+        if close <= gAoeHighBox.get_top() * 1.01
 
-            if aoeLevels.size() == 0 
+            gAoeHighBox.set_lefttop      (bar_index[50], maxaoiHDraw + atrDrawAoe)
+            gAoeHighBox.set_rightbottom  (bar_index + 5,  maxaoiHDraw)
+            gAoeHighBox.set_text         ("Area of Interest")
 
-                aoeLevels.put("High", 
-                         
-                             box.new(bar_index[50], maxaoiH * 1.01, bar_index + 5, maxaoiH, 
-                             border_color = #00000000, 
-                             bgcolor      = color.new(#F24968, 90), 
-                             text         = "Area of Interest" , 
-                             text_size    = size.small, 
-                             text_color   = color.new(#F24968, 33) 
-                             ))
+        else 
 
-                aoeLevels.put("Low", 
-                         
-                             box.new(bar_index[50], minaoiL, bar_index + 5, minaoiL * .99, 
-                             border_color = #00000000, 
-                             bgcolor      = color.new(#14D990, 90), 
-                             text         = "Area of Interest" , 
-                             text_size    = size.small, 
-                             text_color   = color.new(#14D990, 33) 
-                             ))
+            gAoeHighBox.set_lefttop      (bar_index + 5, maxaoiHDraw + atrDrawAoe)
+            gAoeHighBox.set_rightbottom  (bar_index + 5, maxaoiHDraw + atrDrawAoe)
+            gAoeHighBox.set_text         ("")
 
-            getHighBox = aoeLevels.get("High")
+        if close >= gAoeLowBox.get_bottom() * .99
 
-            if close <= getHighBox.get_top() * 1.01
+            gAoeLowBox.set_lefttop     (bar_index[50],  minaoiLDraw)
+            gAoeLowBox.set_rightbottom (bar_index + 5,  minaoiLDraw - atrDrawAoe)
+            gAoeLowBox.set_text        ("Area of Interest")
+        else 
 
-                getHighBox.set_lefttop      (bar_index[50], maxaoiH + atr)
-                getHighBox.set_rightbottom  (bar_index + 5,  maxaoiH)
-                getHighBox.set_text         ("Area of Interest")
+            gAoeLowBox.set_lefttop     (bar_index + 5, minaoiLDraw)
+            gAoeLowBox.set_rightbottom (bar_index + 5, - atrDrawAoe)
+            gAoeLowBox.set_text        ("")
 
-            else 
-
-                getHighBox.set_lefttop      (bar_index + 5, maxaoiH + atr)
-                getHighBox.set_rightbottom  (bar_index + 5,  maxaoiH + atr)
-                getHighBox.set_text         ("")
-
-            getLowBox = aoeLevels.get("Low")
-
-            if close >= getLowBox.get_bottom() * .99
-
-                getLowBox.set_lefttop     (bar_index[50],  minaoiL)
-                getLowBox.set_rightbottom (bar_index + 5,  minaoiL - atr)
-                getLowBox.set_text        ("Area of Interest")
-            else 
-
-                getLowBox.set_lefttop     (bar_index + 5, minaoiL)
-                getLowBox.set_rightbottom (bar_index + 5, - atr)
-                getLowBox.set_text        ("")
-
-drawAOE()
+// inpPosBarsRange 本・基準価格±inpPosPipsRange（片側）内の OB 件数
+[rngZoneUp, rngZoneDn] = f_countObInPipsBars(close, posRngHalfPx, posRngBarStart, bar_index)
+posObRngCntStr = str.tostring(rngZoneUp) + "." + str.tostring(rngZoneDn)
+[obNearAbovePx, obNearBelowPx] = f_nearestObEdges(close)
+// 最近上OB(供給ゾーン下辺)〜最近下OB(需給ゾーン上辺)の1区間内での現値位置％。0%=下参照、100%=上参照。片側のみ・逆転時は na
+laneWOb = not na(obNearAbovePx) and not na(obNearBelowPx) and obNearAbovePx > obNearBelowPx ? obNearAbovePx - obNearBelowPx : na
+obNearestBetweenPct = showOB and not na(laneWOb) and laneWOb > 0 ? 100.0 * (close - obNearBelowPx) / laneWOb : na
 
 // Edit Akame ----------------------------------------------------------------------------------------------------
 // Order Block 内での現価格の位置（％）: 0%=最下端 100%=最上端
@@ -719,6 +810,57 @@ calcObPct(array<box> lowBlocks, array<box> highBlocks, float price) =>
 [obPct, obBottom, obTop] = calcObPct(lowBlock, highBlock, close)
 
 plot(showOB ? obPct : na, "OB % (0-100=範囲内, 200=上抜け, -1=下抜け)", display=display.status_line)
+
+smaTfId = str.tostring(inpTfMin)
+[sma1Ser, sma2Ser] = request.security(syminfo.tickerid, smaTfId, [ta.sma(close, inpSma1), ta.sma(close, inpSma2)], gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_off)
+// plot の title は const string 必須（動的連結不可）。足・期間は「入力」の SMA グループを参照。
+plot(sma1Ser, "SMA1", color = color.new(color.orange, 0), linewidth = 2, display = display.pane)
+plot(sma2Ser, "SMA2", color = color.new(color.blue, 0), linewidth = 2, display = display.pane)
+
+// SMA1 と SMA2 が当該バーでクロスしたか（上抜け・下抜けのいずれかで true）
+// ta.cross* は毎バー評価が必要のため or 短絡内に直接書かない
+smaCrossed(float s1, float s2) =>
+    co = ta.crossover(s1, s2)
+    cu = ta.crossunder(s1, s2)
+    co or cu
+
+smaCrossedBar = smaCrossed(sma1Ser, sma2Ser)
+
+// Entry Signal: 1) SMA cross 2) OB間位置％が中間帯内は不可（na も不可） 3) 範囲内OB・多い側 > 閾値 4) 上側多→売り / 下側多→買い
+entryMidLo = math.min(inpEntryObMidLo, inpEntryObMidHi)
+entryMidHi = math.max(inpEntryObMidLo, inpEntryObMidHi)
+entryStep1 = smaCrossedBar
+entryStep2 = not na(obNearestBetweenPct) and (obNearestBetweenPct < entryMidLo or obNearestBetweenPct > entryMidHi)
+int entryObMax = math.max(rngZoneUp, rngZoneDn)
+entryStep3 = entryObMax > inpEntryObMajorMin
+entryStep4Sell = rngZoneUp > rngZoneDn
+entryStep4Buy  = rngZoneDn > rngZoneUp
+signalSell = entryStep1 and entryStep2 and entryStep3 and entryStep4Sell
+signalBuy  = entryStep1 and entryStep2 and entryStep3 and entryStep4Buy
+
+// Webhook / localServer 想定: smcse.entry.v1（有効な JSON のみ。TradingView は本文が JSON のとき application/json で POST）
+if barstate.isconfirmed and entryAlertEnable and smaCrossedBar
+    entryResultStr = signalBuy ? "Buy" : signalSell ? "Sell" : "No trade"
+    upObStr = f_entryFmtPx(obNearAbovePx)
+    dnObStr = f_entryFmtPx(obNearBelowPx)
+    curStr = str.tostring(close, format.mintick)
+    posJson = na(obNearestBetweenPct) ? "null" : str.tostring(obNearestBetweenPct, "#.##")
+    alertJson = '{"schema":"smcse.entry.v1","result":"' + entryResultStr + '","symbol":"' + syminfo.tickerid + '","upperObRef":"' + upObStr + '","upperObCount":' + str.tostring(rngZoneUp) + ',"lowerObRef":"' + dnObStr + '","lowerObCount":' + str.tostring(rngZoneDn) + ',"lastPrice":"' + curStr + '","positionPct":' + posJson + '}'
+    alert(alertJson, alert.freq_once_per_bar_close)
+
+if entryShowDbg and barstate.isconfirmed and signalSell
+    label.new(bar_index, high, "↓", xloc = xloc.bar_index, color = color(na), textcolor = bearC, style = label.style_label_down, size = size.small)
+if entryShowDbg and barstate.isconfirmed and signalBuy
+    label.new(bar_index, low, "↑", xloc = xloc.bar_index, color = color(na), textcolor = bullC, style = label.style_label_up, size = size.small)
+
+// データウィンドウのみ表示（チャートに線は出さない）
+plot(showOB ? obNearestBetweenPct : na, "最近OB間の位置％", display = display.data_window)
+plot(showOB ? obNearAbovePx : na, "最近上OB価格", display = display.data_window)
+plot(showOB ? obNearBelowPx : na, "最近下OB価格", display = display.data_window)
+plot(rngZoneUp, "範囲内・上側件数OB", display = display.data_window)
+plot(rngZoneDn, "範囲内・下側件数OB", display = display.data_window)
+plot(smaCrossedBar ? 1.0 : na, "SMAクロス有無", display = display.data_window)
+
 // ---------------------------------------------------------------------------------------------------------------
 
 var table tab2 = table.new(position.top_right, 13, 13,  bgcolor = #20222C, border_color = #363843, frame_color = #363843, border_width = 1, frame_width = 1)

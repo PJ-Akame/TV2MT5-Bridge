@@ -10,7 +10,7 @@ from typing import Any
 
 def get_config_path() -> Path:
     """config.json のパスを返す（SMCSE/config を基準）"""
-    # LocalServer から見た config の相対パス
+    # localServer から見た config の相対パス
     base_dir = Path(__file__).resolve().parent.parent
     return base_dir / "config" / "config.json"
 
