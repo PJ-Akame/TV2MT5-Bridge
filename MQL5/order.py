@@ -212,6 +212,13 @@ def execute_order(
     if config is None:
         config = _load_config()
 
+    try:
+        from MQL5.symbol_mapping import load_symbol_mapping, resolve_symbol_for_mt5
+    except ImportError:
+        from symbol_mapping import load_symbol_mapping, resolve_symbol_for_mt5
+
+    symbol = resolve_symbol_for_mt5(symbol, load_symbol_mapping())
+
     terminal_path = (config.get("terminal_path") or "").strip() or None
     expected_login = int(config.get("account_login", 0))
 

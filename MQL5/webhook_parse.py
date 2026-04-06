@@ -10,6 +10,8 @@ import math
 from dataclasses import dataclass
 from typing import Any
 
+from .symbol_mapping import load_symbol_mapping, resolve_symbol_for_mt5
+
 
 def flatten_tradingview_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """
@@ -44,12 +46,6 @@ def flatten_tradingview_payload(payload: dict[str, Any]) -> dict[str, Any]:
         if isinstance(v, dict):
             merged = {**merged, **v}
     return merged
-
-
-def strip_exchange_prefix(symbol: str) -> str:
-    if ":" in symbol:
-        return symbol.split(":")[-1]
-    return symbol
 
 
 @dataclass(frozen=True)
@@ -125,6 +121,7 @@ def parse_webhook_for_mt5(
     default_vol = _safe_float_volume(mt5_config.get("volume"), 0.01)
     default_symbol = mt5_config.get("symbol")
     cfg_comment = str(mt5_config.get("comment", "SMCSE"))
+    symbol_map = load_symbol_mapping()
 
     if _use_entry_v1_rules(merged):
         raw_result = merged.get("result")
@@ -145,7 +142,7 @@ def parse_webhook_for_mt5(
         )
         if not symbol:
             return WebhookOrderSkip(reason="symbol がペイロードにも config にもありません")
-        symbol = strip_exchange_prefix(str(symbol))
+        symbol = resolve_symbol_for_mt5(str(symbol), symbol_map)
         volume = _safe_float_volume(
             merged.get("volume") if merged.get("volume") is not None else merged.get("quantity"),
             default_vol,
@@ -161,7 +158,7 @@ def parse_webhook_for_mt5(
     )
     if not symbol:
         return WebhookOrderSkip(reason="symbol がペイロードにも config にもありません")
-    symbol = strip_exchange_prefix(str(symbol))
+    symbol = resolve_symbol_for_mt5(str(symbol), symbol_map)
     raw_action = (
         merged.get("action")
         or merged.get("trade")

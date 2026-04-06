@@ -1,5 +1,6 @@
 # 設定ファイル（トークン・APIキー等を含むため格納しない）
 config/config.json
+config/mapping.json
 
 # cloudflared バイナリ（install_cloudflared.py で取得）
 tunnel/bin/cloudflared
